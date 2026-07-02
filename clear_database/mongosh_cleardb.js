@@ -1,6 +1,22 @@
+// Removes ALL documents from every non-system collection in LabMonitorDB.
+// The collections themselves and their indexes are preserved — this uses
+// deleteMany({}) (empty filter matches everything), NOT drop().
+
 use("LabMonitorDB");
 
-//const deviceName = process.argv[2]
-const deviceName = "pico2"
+print("Target database: LabMonitorDB");
+print("Clearing ALL documents from every non-system collection.");
+print("-----------------------------------------");
 
-db.getCollectionNames().forEach(function(collectionName) {    if (!collectionName.startsWith('system.')) {  var result = db[collectionName].deleteMany({ "device_name" : deviceName }); if (result.deletedCount > 0) { print("Removed " + result.deletedCount + " documents from collection: " + collectionName); }} });
+let totalRemoved = 0;
+
+db.getCollectionNames().forEach(function (collectionName) {
+  if (!collectionName.startsWith("system.")) {
+    const result = db[collectionName].deleteMany({});
+    print("Removed " + result.deletedCount + " documents from collection: " + collectionName);
+    totalRemoved += result.deletedCount;
+  }
+});
+
+print("-----------------------------------------");
+print("Done. Total documents removed: " + totalRemoved);
