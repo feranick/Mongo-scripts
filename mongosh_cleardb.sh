@@ -1,11 +1,20 @@
 #!/bin/bash
 #
-# Clears ALL documents from every non-system collection in the target database.
-# The collections and their indexes are kept (uses deleteMany({}), not drop()).
+# Deletes every document whose "device_name" matches the given argument,
+# across all non-system collections in the target database. The collections
+# themselves are kept (uses deleteMany({ device_name: ... }), not drop()).
 #
 # Connection settings are read from mongosh_db.conf (same directory).
 #
-# Usage: ./mongosh_cleardb.sh
+# Usage: ./mongosh_cleardb.sh <device_name>
+
+if [ -z "${1:-}" ]; then
+    echo "ERROR: Missing required argument."
+    echo "Usage: $0 <device_name>"
+    exit 1
+fi
+
+DEVICE_NAME="$1"
 
 # Resolve paths relative to this script so it works from any cwd.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -25,10 +34,10 @@ if [ ! -f "$JS_SCRIPT" ]; then
 fi
 
 # --- Safety confirmation (delete this block if you need non-interactive runs) ---
-echo "About to remove ALL documents from EVERY collection in ${TARGET_DB} on ${MONGO_HOST}."
-echo "Collections are kept, but every document (all devices) will be deleted. This is irreversible."
-read -r -p "Type the database name (${TARGET_DB}) to confirm: " CONFIRM
-if [ "$CONFIRM" != "$TARGET_DB" ]; then
+echo "About to remove ALL documents where device_name == \"$DEVICE_NAME\""
+echo "from every collection in ${TARGET_DB} on ${MONGO_HOST}. This is irreversible."
+read -r -p "Re-type the device name to confirm: " CONFIRM
+if [ "$CONFIRM" != "$DEVICE_NAME" ]; then
     echo "Confirmation did not match. Aborting."
     exit 1
 fi
@@ -36,7 +45,8 @@ fi
 
 echo "Connecting to MongoDB as user: $ADMIN_USER"
 
-if TARGET_DB="$TARGET_DB" mongosh "mongodb://${MONGO_HOST}/${TARGET_DB}?authSource=${AUTH_DB}" \
+# DEVICE_NAME and TARGET_DB are exported inline so the JS script can read them.
+if DEVICE_NAME="$DEVICE_NAME" TARGET_DB="$TARGET_DB" mongosh "mongodb://${MONGO_HOST}/${TARGET_DB}?authSource=${AUTH_DB}" \
     -u "$ADMIN_USER" \
     -p "$ADMIN_PASS" \
     --quiet \
