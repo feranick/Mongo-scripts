@@ -1,10 +1,20 @@
-// Removes ALL documents from every non-system collection in LabMonitorDB.
+// Removes ALL documents from every non-system collection in the target database.
 // The collections themselves and their indexes are preserved — this uses
 // deleteMany({}) (empty filter matches everything), NOT drop().
+//
+// The database name is read from TARGET_DB (set by the wrapper shell script,
+// which sources it from mongosh_db.conf).
 
-use("LabMonitorDB");
+const targetDb = process.env.TARGET_DB;
 
-print("Target database: LabMonitorDB");
+if (!targetDb) {
+  print("ERROR: TARGET_DB is not set. Aborting.");
+  quit(1);
+}
+
+use(targetDb);
+
+print("Target database: " + targetDb);
 print("Clearing ALL documents from every non-system collection.");
 print("-----------------------------------------");
 

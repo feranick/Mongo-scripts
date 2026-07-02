@@ -1,18 +1,26 @@
-// Removes ALL documents for a single device across every collection in LabMonitorDB.
-// The device name is read from the DEVICE_NAME environment variable, which is set
-// by the wrapper script (mongosh_dropdevice.sh). Passing it via the environment
-// avoids the quoting/injection pitfalls of building an --eval string by hand.
+// Removes ALL documents for a single device across every collection in the target DB.
+// Values are read from environment variables set by the wrapper script
+// (mongosh_dropdevice.sh), which sources them from mongosh_db.conf:
+//   DEVICE_NAME  the device to purge
+//   TARGET_DB    the database to operate on
+// Passing them via the environment avoids the quoting/injection pitfalls of
+// hand-building an --eval string.
 
 const deviceName = process.env.DEVICE_NAME;
+const targetDb = process.env.TARGET_DB;
 
 if (!deviceName) {
   print("ERROR: No device name provided (DEVICE_NAME is empty). Aborting.");
   quit(1);
 }
+if (!targetDb) {
+  print("ERROR: TARGET_DB is not set. Aborting.");
+  quit(1);
+}
 
-use("LabMonitorDB");
+use(targetDb);
 
-print("Target database:    LabMonitorDB");
+print("Target database:    " + targetDb);
 print("Target device_name: " + deviceName);
 print("-----------------------------------------");
 

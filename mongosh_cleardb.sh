@@ -1,19 +1,23 @@
 #!/bin/bash
 #
-# Clears ALL documents from every non-system collection in LabMonitorDB.
+# Clears ALL documents from every non-system collection in the target database.
 # The collections and their indexes are kept (uses deleteMany({}), not drop()).
+#
+# Connection settings are read from mongosh_db.conf (same directory).
 #
 # Usage: ./mongosh_cleardb.sh
 
-MONGO_HOST="localhost:27017"
-ADMIN_USER="admin"
-ADMIN_PASS="password"
-AUTH_DB="admin"
-TARGET_DB="LabMonitorDB"
-
-# Resolve the JS script next to this shell script so it works from any cwd.
+# Resolve paths relative to this script so it works from any cwd.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONFIG_FILE="${SCRIPT_DIR}/mongosh_db.conf"
 JS_SCRIPT="${SCRIPT_DIR}/mongosh_cleardb.js"
+
+if [ ! -f "$CONFIG_FILE" ]; then
+    echo "ERROR: Config file not found at $CONFIG_FILE"
+    exit 1
+fi
+# shellcheck source=/dev/null
+source "$CONFIG_FILE"
 
 if [ ! -f "$JS_SCRIPT" ]; then
     echo "ERROR: Cannot find JS script at $JS_SCRIPT"
@@ -32,7 +36,7 @@ fi
 
 echo "Connecting to MongoDB as user: $ADMIN_USER"
 
-if mongosh "mongodb://${MONGO_HOST}/${TARGET_DB}?authSource=${AUTH_DB}" \
+if TARGET_DB="$TARGET_DB" mongosh "mongodb://${MONGO_HOST}/${TARGET_DB}?authSource=${AUTH_DB}" \
     -u "$ADMIN_USER" \
     -p "$ADMIN_PASS" \
     --quiet \
