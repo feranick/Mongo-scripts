@@ -6,8 +6,10 @@ names the per-device collection) and share a single connection-config file.
 
 - **`mongosh_dropdevice.sh`** — deletes all documents for a device.
 - **`mongosh_exportdevice.sh`** — exports all documents for a device.
-- **`mongosh_importdevice.sh`** — imports a JSON file back into a device's
-  collection (the inverse of export).
+- **`mongosh_importdevice.sh`** — imports a JSON file into a device's collection
+  (the inverse of export; creates the collection if needed).
+- **`mongosh_adddevice.sh`** — appends a JSON file to an **existing** device's
+  collection.
 
 Each script prints its usage and version with `-h` / `--help`.
 
@@ -19,9 +21,10 @@ Each script prints its usage and version with `-h` / `--help`.
 | `mongosh_dropdevice.js`   | mongosh script that performs the delete                        |
 | `mongosh_exportdevice.sh` | Wrapper: finds matching collections and exports the documents  |
 | `mongosh_importdevice.sh` | Wrapper: validates and imports a JSON file into a collection    |
+| `mongosh_adddevice.sh`    | Wrapper: appends a JSON file to an existing collection          |
 | `mongosh_db.conf`         | Connection settings (host, credentials, target DB)            |
 
-Only `mongosh_dropdevice.sh` has a companion `.js`. The export and import
+Only `mongosh_dropdevice.sh` has a companion `.js`. The export/import/add
 wrappers use inline `mongosh` queries plus the MongoDB Database Tools
 (`mongoexport` / `mongoimport`) for the bulk data transfer.
 
@@ -37,19 +40,21 @@ chmod 600 mongosh_db.conf   # contains the DB password in plaintext
 Make the scripts executable:
 
 ```bash
-chmod +x mongosh_dropdevice.sh mongosh_exportdevice.sh mongosh_importdevice.sh
+chmod +x mongosh_dropdevice.sh mongosh_exportdevice.sh \
+         mongosh_importdevice.sh mongosh_adddevice.sh
 ```
 
 ### Requirements
 
 - [`mongosh`](https://www.mongodb.com/docs/mongodb-shell/) on PATH — used by
-  `dropdevice` and `exportdevice`.
+  `dropdevice`, `exportdevice`, and `adddevice`.
 - [`mongoexport` / `mongoimport`](https://www.mongodb.com/docs/database-tools/installation/)
-  on PATH — used by `exportdevice` and `importdevice` respectively. They ship in
-  the **MongoDB Database Tools** package, which installs separately from
-  `mongosh`.
-- `jq` **or** `python3` — optional, used by `importdevice` to validate the input
-  file before writing. If neither is present the check is skipped with a warning.
+  on PATH — used by `exportdevice` (`mongoexport`) and by `importdevice` /
+  `adddevice` (`mongoimport`). They ship in the **MongoDB Database Tools**
+  package, which installs separately from `mongosh`.
+- `jq` **or** `python3` — optional, used by `importdevice` and `adddevice` to
+  validate the input file before writing. If neither is present the check is
+  skipped with a warning.
 
 ## mongosh_dropdevice
 
@@ -124,9 +129,9 @@ against expectations, and `mongoexport` reports the record count per file.
 ## mongosh_importdevice
 
 Imports a JSON file into the collection named after the given device — the
-inverse of `mongosh_exportdevice.sh`. The first argument is used both as the
-target collection name and as the expected `device_name` value in every
-document.
+inverse of `mongosh_exportdevice.sh`. Creates the collection if it does not yet
+exist. The first argument is used both as the target collection name and as the
+expected `device_name` value in every document.
 
 ### Usage
 
@@ -146,32 +151,63 @@ Example — restore `pico2`'s data from a JSON export:
 ./mongosh_importdevice.sh pico2 pico2_pico2_20260704T120000Z.json
 ```
 
-### Input format and validation
+## mongosh_adddevice
+
+Appends a JSON file to an **existing** device's collection. This is
+`mongosh_importdevice.sh` plus one precondition: the target collection (named
+after `<device_name>`) must already exist. If it does not, the script aborts and
+directs you to `mongosh_importdevice.sh` to create it first.
+
+### Usage
+
+```bash
+./mongosh_adddevice.sh <device_name> <data.json>
+```
+
+| Argument       | Meaning                                                            |
+| -------------- | ---------------------------------------------------------------- |
+| `<device_name>`| Existing collection name, and the expected `device_name` value.   |
+| `<data.json>`  | Path to the JSON file to append.                                   |
+| `-h`, `--help` | Show usage and version, then exit.                               |
+
+Example — add more readings to the already-present `pico2`:
+
+```bash
+./mongosh_adddevice.sh pico2 pico2_new_readings.json
+```
+
+Before appending, it reports how many documents currently match the device.
+
+## Input format and validation (import / add)
+
+`mongosh_importdevice.sh` and `mongosh_adddevice.sh` share the same file
+handling:
 
 - The file may be a **JSON array** (as written by `mongosh_exportdevice.sh
   --json`) or **newline-delimited JSON** (one object per line). The format is
   detected automatically from the first non-whitespace character.
-- Before importing, every document is checked to have `device_name` equal to the
+- Before writing, every document is checked to have `device_name` equal to the
   `<device_name>` argument. This uses `jq` if available, otherwise `python3`; if
   neither is present the check is skipped with a warning. A mismatch — or an
-  unparseable file — aborts the import before anything is written.
-- Import uses `mongoimport`'s default **`insert`** mode, so documents that
-  already exist (same `_id`) are not overwritten; those rows are reported as
-  errors by `mongoimport` and the rest still import. Edit the invocation to add
-  `--mode=upsert` or `--drop` if you want replace semantics.
-- The script refuses to import into a reserved `system.*` collection.
+  unparseable file — aborts before anything is written.
+- Both use `mongoimport`'s default **`insert`** mode, so documents that already
+  exist (same `_id`) are not overwritten; those rows are reported as errors by
+  `mongoimport` and the rest still load. Edit the invocation to add
+  `--mode=upsert` or `--drop` for replace semantics. If you are adding data with
+  stale `_id` values and want every document inserted as new, strip `_id` first.
+- Both refuse to write to a reserved `system.*` collection.
 
-Because the target collection defaults to the device name, this round-trips
+Because the target collection defaults to the device name, these round-trip
 cleanly for devices whose data lives in a single collection. If you import a
-file that came from a different source collection, target the correct
-collection by naming it in the first argument.
+file that came from a different source collection, name the correct collection
+in the first argument.
 
 ### Notes
 
 - `mongosh_db.conf` is git-ignored because it holds credentials. Commit
   `mongosh_db.conf.example` with placeholder values instead.
-- All three scripts read the same `mongosh_db.conf`.
-- `mongosh_exportdevice.sh` and `mongosh_importdevice.sh` are read-safe and
-  additive respectively, and both run non-interactively. To run
-  `mongosh_dropdevice.sh` non-interactively (e.g. from cron), remove the
-  confirmation block marked in the script.
+- All scripts read the same `mongosh_db.conf`.
+- `exportdevice` is read-only, and `importdevice` / `adddevice` are additive;
+  all three run non-interactively. To run `mongosh_dropdevice.sh`
+  non-interactively (e.g. from cron), remove the confirmation block marked in
+  the script.
