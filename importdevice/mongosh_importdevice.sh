@@ -2,35 +2,32 @@
 #
 # mongosh_importdevice.sh
 #
-# Imports a JSON file into the collection named after the given device -- the
-# inverse of mongosh_exportdevice.sh. The first argument is used both as the
-# TARGET COLLECTION name and as the expected value of the device_name field in
-# every document.
+# Imports the documents in a JSON file into the shared LabMonitor collection --
+# the inverse of mongosh_exportdevice.sh. All devices live in ONE collection
+# (COLLECTION_NAME in mongosh_db.conf, matching the backend's config.cfg);
+# devices are distinguished by the device_name FIELD, not by collection.
+#
+# The <device_name> argument is therefore NOT the target collection; it is used
+# only to validate that every document in the file belongs to that device before
+# anything is written. The write target is always COLLECTION_NAME.
 #
 # The input file may be:
 #   - a JSON array   (as written by mongosh_exportdevice.sh --json), or
 #   - newline-delimited JSON (one object per line).
 # The format is auto-detected from the first non-whitespace character.
 #
-# Before importing, every document is checked to have device_name equal to the
-# <device_name> argument (the import-side analog of dropdevice's confirmation).
-# This uses jq if present, otherwise python3; if neither is available the check
-# is skipped with a warning. A mismatch (or unparseable file) aborts the import.
+# Import uses mongoimport's default "insert" mode, so documents whose _id already
+# exists are NOT overwritten -- those rows are reported as errors by mongoimport
+# and the rest still import.
 #
-# Import uses mongoimport's default "insert" mode, so documents that already
-# exist (same _id) are NOT overwritten -- those rows are reported as errors by
-# mongoimport and the rest still import. Use --mode=upsert or --drop manually if
-# you want different behaviour.
-#
-# Connection settings are read from mongosh_db.conf (same directory) -- the same
-# file used by the drop/export scripts.
+# Connection settings are read from mongosh_db.conf (same directory).
 #
 # Tools: mongoimport (MongoDB Database Tools) is required; jq OR python3 is used
 # for validation if available.
 #
 # Usage: ./mongosh_importdevice.sh <device_name> <data.json>
 
-VERSION="2026.07.04.1"
+VERSION="2026.07.04.2"
 SCRIPT_NAME="$(basename "$0")"
 
 usage() {
@@ -41,19 +38,19 @@ show_help() {
     cat <<EOF
 $SCRIPT_NAME  version $VERSION
 
-Imports a JSON file into the collection named after the given device (the
-inverse of mongosh_exportdevice.sh). The file may be a JSON array (as written
-by mongosh_exportdevice.sh --json) or newline-delimited JSON; the format is
-detected automatically. Before importing, every document is checked to have
-device_name == <device_name> (uses jq or python3; skipped with a warning if
-neither is present). Connection settings come from mongosh_db.conf in the same
-directory.
+Imports a JSON file into the shared collection (COLLECTION_NAME in
+mongosh_db.conf) where the backend stores every device's data. The
+<device_name> argument is NOT a collection name -- all devices share one
+collection and are distinguished by the device_name field. device_name is used
+only to check that every document in the file belongs to that device before
+writing. The file may be a JSON array (as written by mongosh_exportdevice.sh
+--json) or newline-delimited JSON; the format is detected automatically.
+Validation uses jq or python3 (skipped with a warning if neither is present).
 
 Usage: $SCRIPT_NAME <device_name> <data.json>
 
 Arguments:
-  <device_name>  Target collection name, and the expected device_name value in
-                 every document. Required.
+  <device_name>  Expected device_name value in every document. Required.
   <data.json>    Path to the JSON file to import. Required.
 
 Options:
@@ -81,13 +78,6 @@ fi
 DEVICE_NAME="$1"
 DATA_FILE="$2"
 
-# Refuse to touch reserved collections.
-case "$DEVICE_NAME" in
-    system.*)
-        echo "ERROR: refusing to import into a reserved 'system.*' collection."
-        exit 1 ;;
-esac
-
 if [ ! -f "$DATA_FILE" ]; then
     echo "ERROR: Input file not found: $DATA_FILE"
     exit 1
@@ -103,6 +93,17 @@ if [ ! -f "$CONFIG_FILE" ]; then
 fi
 # shellcheck source=/dev/null
 source "$CONFIG_FILE"
+
+if [ -z "${COLLECTION_NAME:-}" ]; then
+    echo "ERROR: COLLECTION_NAME is not set in mongosh_db.conf."
+    echo 'Add e.g.  COLLECTION_NAME="LabMonitor"  (must match config.cfg on the server).'
+    exit 1
+fi
+case "$COLLECTION_NAME" in
+    system.*)
+        echo "ERROR: refusing to write to reserved collection '$COLLECTION_NAME'."
+        exit 1 ;;
+esac
 
 if ! command -v mongoimport >/dev/null 2>&1; then
     echo "ERROR: 'mongoimport' not found on PATH."
@@ -163,9 +164,12 @@ sys.exit(1 if mismatch else 0)
     fi
 }
 
+URI="mongodb://${MONGO_HOST}/${TARGET_DB}?authSource=${AUTH_DB}"
+
 echo "Connecting to MongoDB as user: $ADMIN_USER"
 echo "Importing '$DATA_FILE' (format: $FMT)"
-echo "into collection \"$DEVICE_NAME\" in ${TARGET_DB} on ${MONGO_HOST}"
+echo "into collection \"$COLLECTION_NAME\" in ${TARGET_DB} on ${MONGO_HOST}"
+echo "(device_name filter: \"$DEVICE_NAME\")"
 echo "-----------------------------------------"
 echo "Validating device_name on every document..."
 
@@ -180,9 +184,7 @@ esac
 
 echo "-----------------------------------------"
 
-URI="mongodb://${MONGO_HOST}/${TARGET_DB}?authSource=${AUTH_DB}"
-
-IMPORT_ARGS=(--collection "$DEVICE_NAME" --file "$DATA_FILE")
+IMPORT_ARGS=(--collection "$COLLECTION_NAME" --file "$DATA_FILE")
 [ "$FMT" = "array" ] && IMPORT_ARGS+=(--jsonArray)
 
 if mongoimport "$URI" \

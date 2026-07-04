@@ -1,15 +1,18 @@
 # Mongo Scripts
 
 Small `mongosh`-based helpers for per-device maintenance of a MongoDB database.
-The scripts operate on the `device_name` field (which, by convention here, also
-names the per-device collection) and share a single connection-config file.
+
+All devices' documents live in a **single collection** (`COLLECTION_NAME` in
+`mongosh_db.conf`, matching the backend's `config.cfg` — `LabMonitor`). Devices
+are distinguished by the `device_name` **field**, not by separate collections.
+Every script keys on that field.
 
 - **`mongosh_dropdevice.sh`** — deletes all documents for a device.
 - **`mongosh_exportdevice.sh`** — exports all documents for a device.
-- **`mongosh_importdevice.sh`** — imports a JSON file into a device's collection
-  (the inverse of export; creates the collection if needed).
-- **`mongosh_adddevice.sh`** — appends a JSON file to an **existing** device's
-  collection.
+- **`mongosh_importdevice.sh`** — imports a JSON file into the shared collection
+  (device_name is used to validate the file, not to choose a collection).
+- **`mongosh_adddevice.sh`** — appends a JSON file for a device that is already
+  present in the shared collection.
 
 Each script prints its usage and version with `-h` / `--help`.
 
@@ -20,9 +23,9 @@ Each script prints its usage and version with `-h` / `--help`.
 | `mongosh_dropdevice.sh`   | Wrapper: reads config, prompts for confirmation, runs delete  |
 | `mongosh_dropdevice.js`   | mongosh script that performs the delete                        |
 | `mongosh_exportdevice.sh` | Wrapper: finds matching collections and exports the documents  |
-| `mongosh_importdevice.sh` | Wrapper: validates and imports a JSON file into a collection    |
-| `mongosh_adddevice.sh`    | Wrapper: appends a JSON file to an existing collection          |
-| `mongosh_db.conf`         | Connection settings (host, credentials, target DB)            |
+| `mongosh_importdevice.sh` | Wrapper: validates and imports a JSON file into the collection  |
+| `mongosh_adddevice.sh`    | Wrapper: appends a JSON file for an existing device             |
+| `mongosh_db.conf`         | Connection settings + `COLLECTION_NAME`                        |
 
 Only `mongosh_dropdevice.sh` has a companion `.js`. The export/import/add
 wrappers use inline `mongosh` queries plus the MongoDB Database Tools
@@ -36,6 +39,9 @@ Copy the example config and fill in your values:
 cp mongosh_db.conf.example mongosh_db.conf
 chmod 600 mongosh_db.conf   # contains the DB password in plaintext
 ```
+
+`COLLECTION_NAME` in `mongosh_db.conf` **must match** `COLLECTION_NAME` in the
+server's `config.cfg`; otherwise import/add would write to the wrong collection.
 
 Make the scripts executable:
 
@@ -80,11 +86,9 @@ irreversible; make sure you have a backup if needed.
 
 Exports all documents for a single device across every non-system collection.
 For each collection that contains matching documents, one file is written,
-named `<device>_<collection>_<UTC-timestamp>.<csv|json>`. A device whose data
-lives in a single collection therefore produces a single file.
-
-Per-collection files are used because CSV is inherently per-collection tabular:
-different collections may have different schemas.
+named `<device>_<collection>_<UTC-timestamp>.<csv|json>`. With the current
+single-collection backend this is normally one file per device, e.g.
+`pico2_LabMonitor_<timestamp>.csv`.
 
 ### Usage
 
@@ -99,39 +103,29 @@ different collections may have different schemas.
 | `-j`, `--json`    | Output JSON arrays instead of CSV.                            |
 | `-h`, `--help`    | Show usage and version, then exit.                           |
 
-Examples:
-
-```bash
-# CSV (default), written to the current directory
-./mongosh_exportdevice.sh pico2
-
-# JSON, written to a chosen directory
-./mongosh_exportdevice.sh --json pico2 ./exports
-```
-
 ### CSV field detection
 
-`mongoexport` CSV mode requires an explicit field list. For each matching
-collection the script auto-detects it by sampling the matching documents with
-`mongosh` (union of top-level keys across up to `SAMPLE_LIMIT` documents,
-default 200). Notes:
+`mongoexport` CSV mode requires an explicit field list, auto-detected by
+sampling matching documents with `mongosh` (union of top-level keys across up to
+`SAMPLE_LIMIT` documents, default 200). Notes:
 
-- Only **top-level** fields become columns; nested sub-documents are not
-  expanded into dot-path columns.
-- A field that appears only beyond the sampled documents could be missed.
-  Raise `SAMPLE_LIMIT` at the top of the script (or set it to `0` to scan all
-  matches) if that's a concern.
-- The JSON path exports whole documents verbatim and has no such limitation.
-
-The detected field list is printed before each export so it can be checked
-against expectations, and `mongoexport` reports the record count per file.
+- Only top-level fields become columns (all LabMonitor fields are flat, so this
+  covers everything).
+- Documents from different ingest paths differ slightly (the Pico path stores
+  `mongo_url`; the browser path stores `client_submission_time`; the backend
+  adds `server_submission_time` / `datetime_utc_pico` / `datetime_utc_client`).
+  The union sampling captures all of these, but for a device fed by mixed
+  sources set `SAMPLE_LIMIT=0` (scan all) to be certain no column is missed.
+- The JSON path exports whole documents verbatim (relaxed extended JSON, so
+  `_id` and datetime fields round-trip cleanly through `mongoimport`).
 
 ## mongosh_importdevice
 
-Imports a JSON file into the collection named after the given device — the
-inverse of `mongosh_exportdevice.sh`. Creates the collection if it does not yet
-exist. The first argument is used both as the target collection name and as the
-expected `device_name` value in every document.
+Imports a JSON file into the shared collection (`COLLECTION_NAME`). The
+`<device_name>` argument is **not** a collection name — all devices share one
+collection and are distinguished by the `device_name` field. `device_name` is
+used only to check that every document in the file belongs to that device before
+anything is written.
 
 ### Usage
 
@@ -141,22 +135,22 @@ expected `device_name` value in every document.
 
 | Argument       | Meaning                                                            |
 | -------------- | ---------------------------------------------------------------- |
-| `<device_name>`| Target collection name, and the expected `device_name` value.     |
+| `<device_name>`| Expected `device_name` value in every document.                   |
 | `<data.json>`  | Path to the JSON file to import.                                   |
 | `-h`, `--help` | Show usage and version, then exit.                               |
 
 Example — restore `pico2`'s data from a JSON export:
 
 ```bash
-./mongosh_importdevice.sh pico2 pico2_pico2_20260704T120000Z.json
+./mongosh_importdevice.sh pico2 pico2_LabMonitor_20260704T120000Z.json
 ```
 
 ## mongosh_adddevice
 
-Appends a JSON file to an **existing** device's collection. This is
-`mongosh_importdevice.sh` plus one precondition: the target collection (named
-after `<device_name>`) must already exist. If it does not, the script aborts and
-directs you to `mongosh_importdevice.sh` to create it first.
+Appends a JSON file to the shared collection for a device that is **already
+present**. This is `mongosh_importdevice.sh` plus a precondition: at least one
+document with `device_name == <device_name>` must already exist in the
+collection. If not, it aborts and directs you to `mongosh_importdevice.sh`.
 
 ### Usage
 
@@ -166,47 +160,49 @@ directs you to `mongosh_importdevice.sh` to create it first.
 
 | Argument       | Meaning                                                            |
 | -------------- | ---------------------------------------------------------------- |
-| `<device_name>`| Existing collection name, and the expected `device_name` value.   |
+| `<device_name>`| Device that must already exist; expected `device_name` value.      |
 | `<data.json>`  | Path to the JSON file to append.                                   |
 | `-h`, `--help` | Show usage and version, then exit.                               |
-
-Example — add more readings to the already-present `pico2`:
-
-```bash
-./mongosh_adddevice.sh pico2 pico2_new_readings.json
-```
 
 Before appending, it reports how many documents currently match the device.
 
 ## Input format and validation (import / add)
 
-`mongosh_importdevice.sh` and `mongosh_adddevice.sh` share the same file
-handling:
+`mongosh_importdevice.sh` and `mongosh_adddevice.sh` share the same handling:
 
 - The file may be a **JSON array** (as written by `mongosh_exportdevice.sh
-  --json`) or **newline-delimited JSON** (one object per line). The format is
-  detected automatically from the first non-whitespace character.
+  --json`) or **newline-delimited JSON**. The format is detected automatically
+  from the first non-whitespace character.
 - Before writing, every document is checked to have `device_name` equal to the
-  `<device_name>` argument. This uses `jq` if available, otherwise `python3`; if
-  neither is present the check is skipped with a warning. A mismatch — or an
-  unparseable file — aborts before anything is written.
-- Both use `mongoimport`'s default **`insert`** mode, so documents that already
-  exist (same `_id`) are not overwritten; those rows are reported as errors by
-  `mongoimport` and the rest still load. Edit the invocation to add
-  `--mode=upsert` or `--drop` for replace semantics. If you are adding data with
-  stale `_id` values and want every document inserted as new, strip `_id` first.
-- Both refuse to write to a reserved `system.*` collection.
+  argument (via `jq`, else `python3`, else skipped with a warning). A mismatch
+  or unparseable file aborts before anything is written.
+- Both write into `COLLECTION_NAME` using `mongoimport`'s default **`insert`**
+  mode, so documents that already exist (same `_id`) are not overwritten; those
+  rows are reported as errors and the rest still load. Add `--mode=upsert` or
+  `--drop` to the invocation for replace semantics.
 
-Because the target collection defaults to the device name, these round-trip
-cleanly for devices whose data lives in a single collection. If you import a
-file that came from a different source collection, name the correct collection
-in the first argument.
+## Security note
+
+The backend stores the auth token in the data. `data_collector.wsgi` validates
+`mongo_secret_key` from each payload but inserts the document unmodified, so
+`mongo_secret_key` (equal to the server secret) — and, for Pico-submitted
+records, `mongo_url` — is saved in every document. Consequences:
+
+- `mongosh_exportdevice.sh` will write those values into the export files. Treat
+  exports as sensitive: `chmod 600` and keep them out of git.
+- The cleanest fix is server-side: drop the field before insert in
+  `data_collector.wsgi`, e.g. `data.pop('mongo_secret_key', None)` (and
+  `mongo_url`) right after the key check.
 
 ### Notes
 
 - `mongosh_db.conf` is git-ignored because it holds credentials. Commit
   `mongosh_db.conf.example` with placeholder values instead.
 - All scripts read the same `mongosh_db.conf`.
+- The scripts authenticate as a separate admin account (`authSource=admin` by
+  default) rather than the app user in `config.cfg`
+  (`authSource=LabMonitorDB`); make sure that admin account can read/write
+  `LabMonitorDB`.
 - `exportdevice` is read-only, and `importdevice` / `adddevice` are additive;
   all three run non-interactively. To run `mongosh_dropdevice.sh`
   non-interactively (e.g. from cron), remove the confirmation block marked in

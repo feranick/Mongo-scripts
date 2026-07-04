@@ -2,37 +2,30 @@
 #
 # mongosh_adddevice.sh
 #
-# Appends the documents in a JSON file to an EXISTING device's collection.
-# This is mongosh_importdevice.sh with one added precondition: the target
-# collection (named after <device_name>) must already exist. If it does not,
-# the script aborts and points you at mongosh_importdevice.sh (which creates a
-# new collection). The first argument is used both as the target collection
-# name and as the expected value of the device_name field in every document.
+# Appends the documents in a JSON file to the shared LabMonitor collection, for
+# a device that is ALREADY present. This is mongosh_importdevice.sh plus one
+# precondition: the collection (COLLECTION_NAME in mongosh_db.conf) must already
+# contain at least one document with device_name == <device_name>. If it does
+# not, the script aborts and points you at mongosh_importdevice.sh (use that to
+# add a device for the first time).
 #
-# The input file may be:
-#   - a JSON array   (as written by mongosh_exportdevice.sh --json), or
-#   - newline-delimited JSON (one object per line).
-# The format is auto-detected from the first non-whitespace character.
+# All devices share ONE collection; devices are distinguished by the
+# device_name FIELD, not by collection. The <device_name> argument is used to
+# (a) confirm the device already exists and (b) validate that every document in
+# the file belongs to that device. The write target is always COLLECTION_NAME.
 #
-# Before importing, every document is checked to have device_name equal to the
-# <device_name> argument (uses jq if present, otherwise python3; skipped with a
-# warning if neither is available). A mismatch or unparseable file aborts.
+# The input file may be a JSON array (as written by mongosh_exportdevice.sh
+# --json) or newline-delimited JSON; the format is auto-detected. Append uses
+# mongoimport's default "insert" mode (existing _id values are not overwritten).
 #
-# Append uses mongoimport's default "insert" mode, so documents whose _id already
-# exists in the collection are NOT overwritten -- those rows are reported as
-# errors by mongoimport and the remaining (genuinely new) documents still get
-# added. If you are appending data that carries stale _id values and want every
-# document inserted as new, strip _id first (or ask for a --regenerate-ids flag).
-#
-# Connection settings are read from mongosh_db.conf (same directory) -- the same
-# file used by the other scripts.
+# Connection settings are read from mongosh_db.conf (same directory).
 #
 # Tools: mongosh (existence check) and mongoimport (append) are required;
 # jq OR python3 is used for validation if available.
 #
 # Usage: ./mongosh_adddevice.sh <device_name> <data.json>
 
-VERSION="2026.07.04.1"
+VERSION="2026.07.04.2"
 SCRIPT_NAME="$(basename "$0")"
 
 usage() {
@@ -43,20 +36,21 @@ show_help() {
     cat <<EOF
 $SCRIPT_NAME  version $VERSION
 
-Appends the documents in a JSON file to an EXISTING device's collection (named
-after <device_name>). This is mongosh_importdevice.sh plus a precondition: the
-collection must already exist; if it does not, use mongosh_importdevice.sh to
-create it. The file may be a JSON array (as written by mongosh_exportdevice.sh
---json) or newline-delimited JSON; the format is detected automatically. Before
-importing, every document is checked to have device_name == <device_name>
-(uses jq or python3; skipped with a warning if neither is present). Connection
-settings come from mongosh_db.conf in the same directory.
+Appends a JSON file to the shared collection (COLLECTION_NAME in
+mongosh_db.conf) for a device that already exists there. This is
+mongosh_importdevice.sh plus a precondition: at least one document with
+device_name == <device_name> must already be present; if not, use
+mongosh_importdevice.sh to add the device for the first time. All devices share
+one collection and are distinguished by the device_name field. The file may be a
+JSON array (as written by mongosh_exportdevice.sh --json) or newline-delimited
+JSON; the format is detected automatically. Validation uses jq or python3
+(skipped with a warning if neither is present).
 
 Usage: $SCRIPT_NAME <device_name> <data.json>
 
 Arguments:
-  <device_name>  Existing target collection, and the expected device_name value
-                 in every document. Required.
+  <device_name>  Device that must already exist; also the expected device_name
+                 value in every document. Required.
   <data.json>    Path to the JSON file to append. Required.
 
 Options:
@@ -84,12 +78,6 @@ fi
 DEVICE_NAME="$1"
 DATA_FILE="$2"
 
-case "$DEVICE_NAME" in
-    system.*)
-        echo "ERROR: refusing to touch a reserved 'system.*' collection."
-        exit 1 ;;
-esac
-
 if [ ! -f "$DATA_FILE" ]; then
     echo "ERROR: Input file not found: $DATA_FILE"
     exit 1
@@ -106,6 +94,17 @@ fi
 # shellcheck source=/dev/null
 source "$CONFIG_FILE"
 
+if [ -z "${COLLECTION_NAME:-}" ]; then
+    echo "ERROR: COLLECTION_NAME is not set in mongosh_db.conf."
+    echo 'Add e.g.  COLLECTION_NAME="LabMonitor"  (must match config.cfg on the server).'
+    exit 1
+fi
+case "$COLLECTION_NAME" in
+    system.*)
+        echo "ERROR: refusing to write to reserved collection '$COLLECTION_NAME'."
+        exit 1 ;;
+esac
+
 if ! command -v mongosh >/dev/null 2>&1; then
     echo "ERROR: 'mongosh' not found on PATH (needed to check the device exists)."
     exit 1
@@ -119,26 +118,33 @@ fi
 
 URI="mongodb://${MONGO_HOST}/${TARGET_DB}?authSource=${AUTH_DB}"
 
-# --- Precondition: the target collection (device) must already exist ------
+# --- Precondition: the device must already exist in the shared collection --
 echo "Connecting to MongoDB as user: $ADMIN_USER"
-echo "Checking that device \"$DEVICE_NAME\" exists in ${TARGET_DB} on ${MONGO_HOST}..."
-STATUS="$(DEVICE_NAME="$DEVICE_NAME" mongosh "$URI" \
+echo "Checking that device \"$DEVICE_NAME\" already exists in collection"
+echo "\"$COLLECTION_NAME\" (${TARGET_DB} on ${MONGO_HOST})..."
+STATUS="$(DEVICE_NAME="$DEVICE_NAME" COLLNAME="$COLLECTION_NAME" mongosh "$URI" \
     -u "$ADMIN_USER" \
     -p "$ADMIN_PASS" \
     --quiet \
     --eval '
         const dev = process.env.DEVICE_NAME;
-        if (!db.getCollectionNames().includes(dev)) {
-            print("MISSING");
+        const coll = process.env.COLLNAME;
+        if (!db.getCollectionNames().includes(coll)) {
+            print("NOCOLL");
         } else {
-            print("EXISTS:" + db.getCollection(dev).countDocuments({ device_name: dev }));
+            const n = db.getCollection(coll).countDocuments({ device_name: dev });
+            print(n > 0 ? "EXISTS:" + n : "ABSENT");
         }
     ')"
 
 case "$STATUS" in
-    MISSING)
-        echo "ERROR: device \"$DEVICE_NAME\" does not exist (no collection by that name)."
-        echo "Use mongosh_importdevice.sh to create it, then add to it with this script."
+    NOCOLL)
+        echo "ERROR: collection \"$COLLECTION_NAME\" does not exist in ${TARGET_DB}."
+        echo "Check COLLECTION_NAME in mongosh_db.conf against the server's config.cfg."
+        exit 1 ;;
+    ABSENT)
+        echo "ERROR: device \"$DEVICE_NAME\" is not present in \"$COLLECTION_NAME\" yet."
+        echo "Use mongosh_importdevice.sh to add this device for the first time."
         exit 1 ;;
     EXISTS:*)
         echo "Device exists (${STATUS#EXISTS:} document(s) currently match device_name)." ;;
@@ -201,7 +207,7 @@ sys.exit(1 if mismatch else 0)
 }
 
 echo "-----------------------------------------"
-echo "Appending '$DATA_FILE' (format: $FMT) to collection \"$DEVICE_NAME\""
+echo "Appending '$DATA_FILE' (format: $FMT) to collection \"$COLLECTION_NAME\""
 echo "Validating device_name on every document..."
 
 validate_device
@@ -215,7 +221,7 @@ esac
 
 echo "-----------------------------------------"
 
-IMPORT_ARGS=(--collection "$DEVICE_NAME" --file "$DATA_FILE")
+IMPORT_ARGS=(--collection "$COLLECTION_NAME" --file "$DATA_FILE")
 [ "$FMT" = "array" ] && IMPORT_ARGS+=(--jsonArray)
 
 if mongoimport "$URI" \
